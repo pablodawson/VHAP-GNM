@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+include = ["vhap_gnm/**/*.py"]
+
+[project]
+name = "VHAP-GNM"
+version = "0.1.0"
+requires-python = ">=3.11"  # the gnm package uses enum.StrEnum (Python >= 3.11)
+dependencies = [
+  "tyro",
+    "pyyaml",
+    "numpy",
+    "matplotlib",
+    "scipy",
+    "pillow",
+    "opencv-python",
+    "ffmpeg-python",
+    "colour-science",
+    "torch",  # manually install to avoid CUDA version mismatch
+    "torchvision",  # manually install to avoid CUDA version mismatch
+    "tensorboard",
+    "trimesh",
+    # NOTE: install gnm-shape editable from a clone of https://github.com/google/GNM
+    # (see README), because its landmark data files are not shipped in wheels.
+    # "gnm-shape[pytorch]@git+https://github.com/google/GNM.git#subdirectory=gnm/shape",
+    "nvdiffrast@git+https://github.com/ShenhanQian/nvdiffrast@backface-culling",
+    "BackgroundMattingV2@git+https://github.com/ShenhanQian/BackgroundMattingV2",
+    "STAR@git+https://github.com/ShenhanQian/STAR/",
+    "dlib",  # for STAR
+    "pandas",  # for STAR
+    "gdown",  # for STAR
+    "face-alignment",
+    "dearpygui",
+    "joblib",
+    "safetensors",  # for loading Sapiens2 normal-estimation checkpoints
+]
+
+description = "A head tracking pipeline from videos to NeRF-ready datasets, based on Google's GNM parametric head model."
+readme = "README.md"
