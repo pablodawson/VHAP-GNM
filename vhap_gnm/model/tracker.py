@@ -24,6 +24,7 @@ import torchvision
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import numpy as np
+import matplotlib
 from matplotlib import cm
 from typing import Literal
 from functools import partial
@@ -952,7 +953,7 @@ class GnmTracker:
         if "error_rgb" in output_dict:
             error_rgb = transfm(output_dict["error_rgb"][view_indices].cpu())
             error_rgb = error_rgb.mean(dim=1) / 2 + 0.5
-            cmap = cm.get_cmap("seismic")
+            cmap = matplotlib.colormaps["seismic"]  # cm.get_cmap was removed in matplotlib 3.9
             error_rgb = cmap(error_rgb.cpu())
             error_rgb = torch.from_numpy(error_rgb[..., :3]).to(gt_rgb).permute(0, 3, 1, 2)
             imgs += [img[None] for img in error_rgb]
@@ -1016,7 +1017,7 @@ class GnmTracker:
         if "error_alpha" in output_dict:
             error_alpha = transfm(output_dict["error_alpha"][view_indices].cpu())
             error_alpha = error_alpha.mean(dim=1) / 2 + 0.5
-            cmap = cm.get_cmap("seismic")
+            cmap = matplotlib.colormaps["seismic"]  # cm.get_cmap was removed in matplotlib 3.9
             error_alpha = cmap(error_alpha.cpu())
             error_alpha = (
                 torch.from_numpy(error_alpha[..., :3]).to(gt_rgb).permute(0, 3, 1, 2)

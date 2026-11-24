@@ -622,7 +622,9 @@ def main(
         gnm_mode: Literal['mesh', 'param']='param',
         create_mask_from_mesh: bool=True,
         epoch: int=-1,
+        train_ratio: float=0.7,
     ):
+    """train_ratio: leading fraction of timesteps used for training; the rest is the test split."""
     print(f"Begin exportation from {src_folder}")
     assert src_folder.exists(), f"Folder not found: {src_folder}"
     src_folder, cfg = load_config(src_folder)
@@ -642,7 +644,7 @@ def main(
         mask_generator = MaskFromGNM(cfg.data, cfg.model, tgt_folder, background_color)
         mask_generator.write()
 
-    split_json(tgt_folder)
+    split_json(tgt_folder, train_ratio=train_ratio)
     
     print("Finshed!")
 

@@ -4,7 +4,7 @@
 # laplacian matrix for offset regularization.
 
 
-from gnm.shape import gnm_common, gnm_landmarks, gnm_pytorch
+from gnm.shape import gnm_common, gnm_landmarks, gnm_pytorch, gnm_xnp
 from vhap_gnm.util.log import get_logger
 from matplotlib import cm
 
@@ -23,8 +23,9 @@ if gnm_pytorch.GNM.__hash__ is None:
     gnm_pytorch.GNM.__hash__ = object.__hash__
 
 
-def _joint_transforms_world_device_safe(joints, rotations, translation, joint_parent_indices):
-    """Drop-in replacement for gnm_common.joint_transforms_world.
+def _joint_transforms_world_from_rotation_matrices_device_safe(joints, rotation_matrices, translation,
+                                                             joint_parent_indices):
+    """Drop-in replacement for gnm_common.joint_transforms_world_from_rotation_matrices.
 
     The original builds `parent_indices_except_root` and the homogeneous
     [0, 0, 0, 1] row via `xnp.asarray(...)` without a device kwarg, so on
@@ -32,15 +33,13 @@ def _joint_transforms_world_device_safe(joints, rotations, translation, joint_pa
     mirrors the original logic but places both on `joints.device`.
     """
     if not isinstance(joints, torch.Tensor):
-        return _gnm_joint_transforms_world_orig(joints, rotations, translation, joint_parent_indices)
+        return _gnm_from_rotation_matrices_orig(joints, rotation_matrices, translation, joint_parent_indices)
 
     num_joints = len(joint_parent_indices)
     parent_indices_except_root = torch.asarray(
         joint_parent_indices[1:], dtype=torch.int32, device=joints.device
     )
     joint_parents = gnm_common.take(joints, parent_indices_except_root, axis=-2, xnp=torch)
-
-    local_rotations = gnm_common.axis_angle_to_rotation_matrix(rotations)
 
     root_translation = joints[..., 0, :] + translation
     non_root_translations = joints[..., 1:, :] - joint_parents
@@ -49,7 +48,7 @@ def _joint_transforms_world_device_safe(joints, rotations, translation, joint_pa
     )
 
     local_transforms_3x4 = torch.concatenate(
-        [local_rotations, local_translations[..., None]], axis=-1
+        [rotation_matrices, local_translations[..., None]], axis=-1
     )
 
     bottom_row = gnm_common.zeros_with_batch_dims(
@@ -70,8 +69,44 @@ def _joint_transforms_world_device_safe(joints, rotations, translation, joint_pa
     return torch.stack(world_transforms_list, axis=-3)
 
 
+def _joint_transforms_world_device_safe(joints, rotations, translation, joint_parent_indices):
+    """Drop-in replacement for gnm_common.joint_transforms_world (axis-angle rotations)."""
+    if not isinstance(joints, torch.Tensor):
+        return _gnm_joint_transforms_world_orig(joints, rotations, translation, joint_parent_indices)
+    return _joint_transforms_world_from_rotation_matrices_device_safe(
+        joints, gnm_common.axis_angle_to_rotation_matrix(rotations), translation, joint_parent_indices
+    )
+
+
+# Newer GNM (Nov 2026) skins through joint_transforms_world_from_rotation_matrices; older checkouts only have
+# joint_transforms_world. Patch whichever exist.
 _gnm_joint_transforms_world_orig = gnm_common.joint_transforms_world
 gnm_common.joint_transforms_world = _joint_transforms_world_device_safe
+if hasattr(gnm_common, "joint_transforms_world_from_rotation_matrices"):
+    _gnm_from_rotation_matrices_orig = gnm_common.joint_transforms_world_from_rotation_matrices
+    gnm_common.joint_transforms_world_from_rotation_matrices = _joint_transforms_world_from_rotation_matrices_device_safe
+
+
+# GNM decorates its geometry methods with etils' @enp.check_and_normalize_arrays. Under older torch (2.4, our CUDA
+# images) that normalisation silently detaches torch inputs, so identity/expression got no gradient: tracking left
+# every expression at exactly 0. For torch tensors call the undecorated implementation (plain torch math) instead.
+def _torch_passthrough(decorated):
+    raw = decorated.__wrapped__
+
+    def method(self, *args, **kwargs):
+        if any(isinstance(a, torch.Tensor) for a in (*args, *kwargs.values())):
+            return raw(self, *args, **kwargs)
+        return decorated(self, *args, **kwargs)
+    method.__wrapped__ = raw
+    method.__doc__ = decorated.__doc__
+    return method
+
+
+for _name in ("vertex_positions_bind_pose", "joint_positions_bind_pose", "compute_pose_correctives",
+              "joint_transforms_world", "get_posed_joint_transforms"):
+    _m = getattr(gnm_xnp.GNM, _name, None)
+    if _m is not None and hasattr(_m, "__wrapped__"):
+        setattr(gnm_xnp.GNM, _name, _torch_passthrough(_m))
 
 # GNM joint order: neck (root), head, left_eye, right_eye
 JOINT_NECK = 0
