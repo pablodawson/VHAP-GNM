@@ -1266,6 +1266,7 @@ class GlobalTracker(GnmTracker):
     def detect_landmarks(self, cfg):
         cfg_data = deepcopy(cfg.data)
         cfg_data.use_landmark = False
+        cfg_data.use_normal = False  # normals are annotated after landmarks; don't load them here
         dataset = import_module(cfg.data._target)(cfg=cfg_data, batchify_all_views=False)
 
         if cfg.data.landmark_source == 'face-alignment':
