@@ -594,7 +594,12 @@ def split_json(tgt_folder: Path, train_ratio=0.7):
 def load_config(src_folder: Path):
     config_path = src_folder / "config.yml"
     if not config_path.exists():
-        src_folder = sorted(src_folder.iterdir())[-1]
+        # the newest run folder with results (a resumed tracking leaves one folder per attempt, and the output folder
+        # also holds checkpoint.pt)
+        runs = sorted(p for p in src_folder.iterdir()
+                      if (p / "config.yml").exists() and any(p.glob("tracked_gnm_params_*.npz")))
+        assert runs, f"No tracking results in {src_folder}"
+        src_folder = runs[-1]
         config_path = src_folder / "config.yml"
     assert config_path.exists(), f"File not found: {config_path}"
 

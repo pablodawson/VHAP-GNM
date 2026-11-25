@@ -1355,17 +1355,72 @@ class GlobalTracker(GnmTracker):
         for t in train_tensors:
             t.requires_grad = True
 
+    _CKPT_TENSORS = ("identity", "expr", "rotation", "translation", "head_pose", "eyes_pose", "tex", "lights",
+                     "static_offset", "focal_length")
+
+    def save_checkpoint(self, phase, progress, optimizer=None, scheduler=None):
+        """Raw tracked tensors + where to continue (phase 'sequential': next timestep; 'global': epochs done)."""
+        path = self.cfg.exp.output_folder / "checkpoint.pt"
+        ck = dict(phase=phase, progress=progress, global_step=self.global_step,
+                  tensors={k: getattr(self, k).detach().cpu() for k in self._CKPT_TENSORS
+                           if getattr(self, k, None) is not None})
+        if optimizer is not None:
+            ck["optimizer"] = optimizer.state_dict()
+        if scheduler is not None:
+            ck["scheduler"] = scheduler.state_dict()
+        tmp = path.with_suffix(".tmp")
+        torch.save(ck, tmp)
+        os.replace(tmp, path)  # atomic: a kill mid-save leaves the previous checkpoint intact
+        self.logger.info(f"Checkpoint: {phase} {progress}")
+
+    def load_checkpoint(self):
+        path = self.cfg.exp.output_folder / "checkpoint.pt"
+        if not self.cfg.exp.checkpoint_every or not path.exists():
+            return None
+        ck = torch.load(path, map_location=self.device, weights_only=False)
+        for k, v in ck["tensors"].items():
+            getattr(self, k).data.copy_(v.to(self.device))
+        self.global_step = ck["global_step"]
+        self.logger.info(f"Resuming from checkpoint: {ck['phase']} {ck['progress']}")
+        return ck
+
     def optimize(self):
         """
         Optimizes GNM parameters on all frames of the dataset with random rampling
         :return:
         """
         self.global_step = 0
+        every = self.cfg.exp.checkpoint_every
+        ck = self.load_checkpoint()
 
-        # sequential optimization of timesteps
-        self.logger.info(f"Start sequential tracking GNM in {self.n_timesteps} frames")
+        if ck is None or ck["phase"] == "sequential":
+            self.optimize_sequential(start=ck["progress"] if ck else 0)
+            if every:
+                self.save_checkpoint("global", 0)
+            ck = None
+
+        self.logger.info(f"Start global optimization of all frames")
+        # global optimization with random sampling
         dataloader = DataLoader(
             self.dataset, 
+            batch_size=self.cfg.batch_size if not self.dataset.batchify_all_views else None, 
+            shuffle=True, 
+            num_workers=4
+        )
+        if self.cfg.exp.photometric:
+            self.optimize_stage(stage='rgb_global_tracking', dataloader=dataloader, lr_scale=0.1, resume=ck)
+        else:
+            self.optimize_stage(stage='lmk_global_tracking', dataloader=dataloader, lr_scale=0.1, resume=ck)
+
+        self.logger.info("All done.")
+
+    def optimize_sequential(self, start=0):
+        every = self.cfg.exp.checkpoint_every
+        # sequential optimization of timesteps
+        self.logger.info(f"Start sequential tracking GNM in {self.n_timesteps} frames (from timestep {start})")
+        dataset = self.dataset if start == 0 else torch.utils.data.Subset(self.dataset, range(start, len(self.dataset)))
+        dataloader = DataLoader(
+            dataset, 
             batch_size=self.cfg.batch_size if not self.dataset.batchify_all_views else None, 
             shuffle=False, 
             num_workers=4
@@ -1386,23 +1441,11 @@ class GlobalTracker(GnmTracker):
             else:
                 self.optimize_stage('lmk_sequential_tracking', sample)
             self.initialize_next_timtestep(sample["timestep_index"])
+            t_next = sample["timestep_index"][-1].item() + 1
+            if every and t_next % every == 0:
+                self.save_checkpoint("sequential", t_next)
         
         self.evaluate(make_visualization=True, epoch=0)
-
-        self.logger.info(f"Start global optimization of all frames")
-        # global optimization with random sampling
-        dataloader = DataLoader(
-            self.dataset, 
-            batch_size=self.cfg.batch_size if not self.dataset.batchify_all_views else None, 
-            shuffle=True, 
-            num_workers=4
-        )
-        if self.cfg.exp.photometric:
-            self.optimize_stage(stage='rgb_global_tracking', dataloader=dataloader, lr_scale=0.1)
-        else:
-            self.optimize_stage(stage='lmk_global_tracking', dataloader=dataloader, lr_scale=0.1)
-
-        self.logger.info("All done.")
     
     def optimize_stage(
             self, 
@@ -1410,6 +1453,7 @@ class GlobalTracker(GnmTracker):
             sample = None,
             dataloader = None,
             lr_scale = 1.0,
+            resume = None,
         ):
         params = self.get_train_parameters(stage)
         optimizer = self.configure_optimizer(params, lr_scale=lr_scale)
@@ -1422,11 +1466,19 @@ class GlobalTracker(GnmTracker):
             assert dataloader is not None
             num_epochs = self.cfg.pipeline[stage].num_epochs
             scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.9)
-            for epoch_i in range(num_epochs):
+            start_epoch = 0
+            if resume is not None and resume["phase"] == "global":
+                start_epoch = resume["progress"]
+                if "optimizer" in resume:
+                    optimizer.load_state_dict(resume["optimizer"])
+                    scheduler.load_state_dict(resume["scheduler"])
+            for epoch_i in range(start_epoch, num_epochs):
                 self.logger.info(f"EPOCH {epoch_i+1} / {num_epochs}")
                 for step_i, sample in enumerate(dataloader):
                     self.optimize_iter(sample, optimizer, stage)
                 scheduler.step()
+                if self.cfg.exp.checkpoint_every:
+                    self.save_checkpoint("global", epoch_i + 1, optimizer, scheduler)
 
                 if (epoch_i + 1) % 10 == 0:
                     self.evaluate(make_visualization=True, epoch=epoch_i+1)

@@ -230,6 +230,9 @@ class LogConfig(Config):
 class ExperimentConfig(Config):
     output_folder: Path = Path('output/track')
     reuse_landmarks: bool = True
+    checkpoint_every: int = 0
+    """Save a resumable checkpoint (output_folder/checkpoint.pt) every N frames of sequential tracking and after every
+    global epoch; a restart with the same output_folder resumes from it. 0 disables."""
     keyframes: Tuple[int, ...] = tuple()
     photometric: bool = True
     """enable photometric optimization, otherwise only landmark optimization"""

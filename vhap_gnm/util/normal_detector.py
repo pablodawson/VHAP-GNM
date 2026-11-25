@@ -7,6 +7,7 @@
 
 import os
 import cv2
+from collections import Counter
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
@@ -39,6 +40,20 @@ def annotate_normals(dataset, checkpoint_path, arch="sapiens2_0.4b", device="cud
     os.umask(0o002)
     detector = NormalDetectorSapiens2(checkpoint_path, arch=arch, device=device)
 
+    # a run killed mid-write can leave a truncated .npy, which the skip-if-exists below would keep forever:
+    # every normal map has the same shape, so drop files whose size differs from the common one
+    cache_dir = dataset.get_property_path("normal", 0).parent
+    if cache_dir.exists():
+        for tmp in cache_dir.glob("*.tmp.npy"):
+            tmp.unlink()
+        sizes = {p: p.stat().st_size for p in cache_dir.glob("*.npy")}
+        if len(sizes) > 1:
+            common = Counter(sizes.values()).most_common(1)[0][0]
+            for p, size in sizes.items():
+                if size != common:
+                    logger.warning(f"Removing truncated normal map {p} ({size} bytes, expected {common})")
+                    p.unlink()
+
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=4)
     for item in tqdm(dataloader, desc="Sapiens2 normals"):
         timestep_id = item["timestep_id"][0]
@@ -55,7 +70,10 @@ def annotate_normals(dataset, checkpoint_path, arch="sapiens2_0.4b", device="cud
 
         if not out_path.parent.exists():
             out_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(out_path, normal.astype(np.float16))  # float16 halves the cache (~2.3 MB/frame at 640x608); loader casts to float32
+        # float16 halves the cache (~2.3 MB/frame at 640x608); loader casts to float32. Written atomically.
+        tmp = out_path.with_name(out_path.stem + ".tmp.npy")
+        np.save(tmp, normal.astype(np.float16))
+        os.replace(tmp, out_path)
 
 
 if __name__ == "__main__":
